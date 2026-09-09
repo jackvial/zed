@@ -41,6 +41,7 @@ pub mod file_history_view;
 pub mod git_panel;
 mod git_panel_settings;
 pub mod git_picker;
+mod incremental_review;
 pub mod multi_diff_view;
 pub mod picker_prompt;
 pub mod project_diff;
@@ -65,6 +66,7 @@ pub fn init(cx: &mut App) {
 
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
         ProjectDiff::register(workspace, cx);
+        incremental_review::register(workspace);
         CommitModal::register(workspace);
         git_panel::register(workspace);
         repository_selector::register(workspace);

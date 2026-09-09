@@ -359,10 +359,11 @@ impl ProjectDiff {
             );
             match branch_diff.read(cx).diff_base() {
                 DiffBase::Head => {}
-                DiffBase::Merge { .. } => diff_display_editor.set_render_diff_hunk_controls(
-                    Arc::new(|_, _, _, _, _, _, _, _| gpui::Empty.into_any_element()),
-                    cx,
-                ),
+                DiffBase::Merge { .. } | DiffBase::Revision { .. } => diff_display_editor
+                    .set_render_diff_hunk_controls(
+                        Arc::new(|_, _, _, _, _, _, _, _| gpui::Empty.into_any_element()),
+                        cx,
+                    ),
             }
             diff_display_editor.rhs_editor().update(cx, |editor, cx| {
                 editor.disable_diagnostics(cx);
@@ -374,7 +375,7 @@ impl ProjectDiff {
                             workspace: workspace.downgrade(),
                         });
                     }
-                    DiffBase::Merge { .. } => {
+                    DiffBase::Merge { .. } | DiffBase::Revision { .. } => {
                         editor.register_addon(BranchDiffAddon {
                             branch_diff: branch_diff.clone(),
                         });
@@ -958,7 +959,7 @@ impl Item for ProjectDiff {
     fn tab_tooltip_text(&self, cx: &App) -> Option<SharedString> {
         match self.diff_base(cx) {
             DiffBase::Head => Some("Project Diff".into()),
-            DiffBase::Merge { .. } => Some("Branch Diff".into()),
+            DiffBase::Merge { .. } | DiffBase::Revision { .. } => Some("Branch Diff".into()),
         }
     }
 
@@ -975,7 +976,9 @@ impl Item for ProjectDiff {
     fn tab_content_text(&self, _detail: usize, cx: &App) -> SharedString {
         match self.branch_diff.read(cx).diff_base() {
             DiffBase::Head => "Uncommitted Changes".into(),
-            DiffBase::Merge { base_ref } => format!("Changes since {}", base_ref).into(),
+            DiffBase::Merge { base_ref } | DiffBase::Revision { base_ref } => {
+                format!("Changes since {}", base_ref).into()
+            }
         }
     }
 

@@ -95,6 +95,32 @@ See [Configuring Zed](./configuring-zed.md) for more about the Settings Editor.
 
 You can switch between modes at any time. Your preference applies to [Project Diff](#project-diff), [File History](#file-history), and [Stash Diff View](#stash-diff-view). These diff views function as [multibuffers](./multibuffers.md), allowing you to edit multiple excerpts simultaneously.
 
+## Incremental Review {#incremental-review}
+
+Use {#action review::OpenIncrementalReview} to inspect changes from an external
+coding agent, a terminal, or your own edits. The first review includes your current
+uncommitted text changes. Keep the review tab open to see further changes appear.
+
+Click **Reviewed** beside a changed block, or use {#kb review::MarkReviewed}, to
+check it off and move to the next change. The review tab is read-only. You can
+expand excerpts to see more context or open the source file to edit it, as in other
+[multibuffers](./multibuffers.md).
+
+Checking off a block saves its reviewed contents without staging, committing, or
+changing the source file. If that block changes again, the new difference appears
+for review. A block that changes between being displayed and checked off must be
+reviewed again.
+
+Review progress is stored locally for each repository folder and branch. Reopen
+{#action review::OpenIncrementalReview} after restarting Zed to resume. Committing
+does not mark pending blocks reviewed.
+
+When you switch branches, open Incremental Review again for the new branch. The
+previous branch's review pauses until you return to that branch.
+
+Incremental review supports local Git repositories with an initial commit. It
+reviews text changes; use the Git Panel for binary files and empty-file changes.
+
 ## File History
 
 File History shows the commit history for an individual file. Each entry displays the commit's author, timestamp, and message. Selecting a commit opens a diff view filtered to show only the changes made to that file in that commit.

@@ -25,6 +25,7 @@ use crate::{
 pub enum DiffBase {
     Head,
     Merge { base_ref: SharedString },
+    Revision { base_ref: SharedString },
 }
 
 impl DiffBase {
@@ -40,6 +41,7 @@ pub struct BranchDiff {
     base_commit: Option<SharedString>,
     head_commit: Option<SharedString>,
     tree_diff: Option<TreeDiff>,
+    loaded_head_commit: Option<Option<SharedString>>,
     _subscription: Subscription,
     update_needed: postage::watch::Sender<()>,
     _task: Task<()>,
@@ -98,6 +100,7 @@ impl BranchDiff {
             repo,
             project,
             tree_diff: None,
+            loaded_head_commit: None,
             base_commit: None,
             head_commit: None,
             _subscription: git_store_subscription,
@@ -113,6 +116,7 @@ impl BranchDiff {
     pub fn set_repo(&mut self, repo: Option<Entity<Repository>>, cx: &mut Context<Self>) {
         self.repo = repo;
         self.tree_diff = None;
+        self.loaded_head_commit = None;
         self.base_commit = None;
         self.head_commit = None;
         cx.emit(BranchDiffEvent::FileListChanged);
@@ -249,28 +253,36 @@ impl BranchDiff {
         cx: &mut AsyncWindowContext,
     ) -> Result<()> {
         let task = this.update(cx, |this, cx| {
-            let DiffBase::Merge { base_ref } = this.diff_base.clone() else {
-                return None;
+            let diff_type = match this.diff_base.clone() {
+                DiffBase::Head => return None,
+                DiffBase::Merge { base_ref } => DiffTreeType::MergeBase {
+                    base: base_ref,
+                    head: "HEAD".into(),
+                },
+                DiffBase::Revision { base_ref } => DiffTreeType::Since {
+                    base: base_ref,
+                    head: "HEAD".into(),
+                },
             };
             let Some(repo) = this.repo.as_ref() else {
                 this.tree_diff.take();
                 return None;
             };
             repo.update(cx, |repo, cx| {
-                Some(repo.diff_tree(
-                    DiffTreeType::MergeBase {
-                        base: base_ref,
-                        head: "HEAD".into(),
-                    },
-                    cx,
+                Some((
+                    repo.diff_tree(diff_type, cx),
+                    repo.head_commit.as_ref().map(|commit| commit.sha.clone()),
                 ))
             })
         })?;
-        let Some(task) = task else { return Ok(()) };
+        let Some((task, head_commit)) = task else {
+            return Ok(());
+        };
 
         let diff = task.await??;
         this.update(cx, |this, cx| {
             this.tree_diff = Some(diff);
+            this.loaded_head_commit = Some(head_commit);
             cx.emit(BranchDiffEvent::FileListChanged);
             cx.notify();
         })
@@ -282,10 +294,30 @@ impl BranchDiff {
 
     #[instrument(skip_all)]
     pub fn load_buffers(&mut self, cx: &mut Context<Self>) -> Vec<DiffBuffer> {
+        self.load_buffers_including([], cx)
+    }
+
+    pub fn load_buffers_including(
+        &mut self,
+        extra_paths: impl IntoIterator<Item = RepoPath>,
+        cx: &mut Context<Self>,
+    ) -> Vec<DiffBuffer> {
         let mut output = Vec::default();
         let Some(repo) = self.repo.clone() else {
             return output;
         };
+        if matches!(self.diff_base, DiffBase::Revision { .. })
+            && self.loaded_head_commit.as_ref()
+                != Some(
+                    &repo
+                        .read(cx)
+                        .head_commit
+                        .as_ref()
+                        .map(|commit| commit.sha.clone()),
+                )
+        {
+            return output;
+        }
 
         self.project.update(cx, |_project, cx| {
             let mut seen = HashSet::default();
@@ -318,27 +350,38 @@ impl BranchDiff {
                     file_status: item.status,
                 });
             }
-            let Some(tree_diff) = self.tree_diff.as_ref() else {
-                return;
-            };
-
-            for (path, branch_diff) in tree_diff.entries.iter() {
-                if seen.contains(&path) {
+            if let Some(tree_diff) = self.tree_diff.as_ref() {
+                for (path, branch_diff) in tree_diff.entries.iter() {
+                    if !seen.insert(path.clone()) {
+                        continue;
+                    }
+                    let Some(project_path) = repo.read(cx).repo_path_to_project_path(&path, cx)
+                    else {
+                        continue;
+                    };
+                    output.push(DiffBuffer {
+                        repo_path: path.clone(),
+                        load: Self::load_buffer(
+                            Some(branch_diff.clone()),
+                            project_path,
+                            repo.clone(),
+                            cx,
+                        ),
+                        file_status: diff_status_to_file_status(branch_diff),
+                    });
+                }
+            }
+            for path in extra_paths {
+                if !seen.insert(path.clone()) {
                     continue;
                 }
-
                 let Some(project_path) = repo.read(cx).repo_path_to_project_path(&path, cx) else {
                     continue;
                 };
-                let task =
-                    Self::load_buffer(Some(branch_diff.clone()), project_path, repo.clone(), cx);
-
-                let file_status = diff_status_to_file_status(branch_diff);
-
                 output.push(DiffBuffer {
-                    repo_path: path.clone(),
-                    load: task,
-                    file_status,
+                    repo_path: path,
+                    load: Self::load_buffer(None, project_path, repo.clone(), cx),
+                    file_status: FileStatus::Untracked,
                 });
             }
         });

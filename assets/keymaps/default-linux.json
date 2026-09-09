@@ -211,6 +211,12 @@
     },
   },
   {
+    "context": "IncrementalReview > Editor",
+    "bindings": {
+      "alt-y": "review::MarkReviewed",
+    },
+  },
+  {
     "context": "AgentDiff",
     "bindings": {
       "alt-y": "agent::Keep",

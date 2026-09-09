@@ -237,6 +237,13 @@
     },
   },
   {
+    "context": "IncrementalReview > Editor",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-y": "review::MarkReviewed",
+    },
+  },
+  {
     "context": "AgentDiff",
     "use_key_equivalents": true,
     "bindings": {

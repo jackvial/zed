@@ -210,6 +210,12 @@
     },
   },
   {
+    "context": "IncrementalReview > Editor",
+    "bindings": {
+      "alt-y": "review::MarkReviewed",
+    },
+  },
+  {
     "context": "AgentDiff",
     "use_key_equivalents": true,
     "bindings": {
