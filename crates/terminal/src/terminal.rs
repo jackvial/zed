@@ -49,7 +49,6 @@ use task::{HideStrategy, Shell, SpawnInTerminal};
 use terminal_hyperlinks::RegexSearches;
 use terminal_settings::{AlternateScroll, CursorShape, TerminalSettings};
 use theme::{ActiveTheme, Theme};
-use urlencoding;
 use util::{paths::PathStyle, truncate_and_trailoff};
 
 #[cfg(unix)]
@@ -1226,30 +1225,28 @@ impl Terminal {
         let (maybe_url_or_path, is_url, url_match) = hyperlink;
         let prev_hovered_word = self.last_content.last_hovered_word.take();
 
-        let target = if is_url {
-            if let Some(path) = maybe_url_or_path.strip_prefix("file://") {
-                let decoded_path = urlencoding::decode(path)
-                    .map(|decoded| decoded.into_owned())
-                    .unwrap_or(path.to_owned());
-
-                MaybeNavigationTarget::PathLike(PathLikeTarget {
-                    maybe_path: decoded_path,
-                    terminal_dir: self.working_directory(),
-                })
-            } else {
-                MaybeNavigationTarget::Url(maybe_url_or_path.clone())
-            }
-        } else {
-            MaybeNavigationTarget::PathLike(PathLikeTarget {
-                maybe_path: maybe_url_or_path.clone(),
-                terminal_dir: self.working_directory(),
-            })
-        };
+        let target = self.navigation_target(&maybe_url_or_path, is_url);
 
         if open {
             cx.emit(Event::Open(target));
         } else {
             self.update_selected_word(prev_hovered_word, url_match, maybe_url_or_path, target, cx);
+        }
+    }
+
+    fn navigation_target(&self, maybe_url_or_path: &str, is_url: bool) -> MaybeNavigationTarget {
+        let path = if is_url {
+            terminal_hyperlinks::path_from_file_url(maybe_url_or_path, self.path_style)
+        } else {
+            Some(maybe_url_or_path.to_owned())
+        };
+        if let Some(maybe_path) = path {
+            MaybeNavigationTarget::PathLike(PathLikeTarget {
+                maybe_path,
+                terminal_dir: self.working_directory(),
+            })
+        } else {
+            MaybeNavigationTarget::Url(maybe_url_or_path.to_owned())
         }
     }
 
@@ -1837,7 +1834,7 @@ impl Terminal {
                     self.last_content.display_offset,
                 );
 
-                if !hyperlink_range.contains(&point) {
+                if !e.modifiers.secondary() || !hyperlink_range.contains(&point) {
                     self.mouse_down_hyperlink = None;
                 } else {
                     return;
@@ -1890,20 +1887,27 @@ impl Terminal {
             self.last_content.display_offset,
         );
 
-        if e.button == MouseButton::Left
-            && e.modifiers.secondary()
-            && !self.mouse_mode(e.modifiers.shift)
-        {
+        if e.button == MouseButton::Left && !self.mouse_mode(e.modifiers.shift) {
             let term_lock = self.term.lock();
             self.mouse_down_hyperlink = terminal_hyperlinks::find_from_grid_point(
                 &term_lock,
                 point,
                 &mut self.hyperlink_regex_searches,
                 self.path_style,
-            );
+            )
+            .filter(|(target, is_url, _)| {
+                // Codex styles custom-scheme links without emitting OSC 8 hyperlinks.
+                e.modifiers.secondary()
+                    || (e.modifiers == Modifiers::default()
+                        && e.click_count == 1
+                        && *is_url
+                        && target.split_once('?').is_some_and(|(route, _)| {
+                            matches!(route, "zed://git/review" | "zed://git/review/")
+                        }))
+            });
             drop(term_lock);
 
-            if self.mouse_down_hyperlink.is_some() {
+            if self.mouse_down_hyperlink.is_some() && e.modifiers.secondary() {
                 return;
             }
         }
@@ -1957,7 +1961,7 @@ impl Terminal {
         }
     }
 
-    pub fn mouse_up(&mut self, e: &MouseUpEvent, cx: &Context<Self>) {
+    pub fn mouse_up(&mut self, e: &MouseUpEvent, cx: &mut Context<Self>) {
         let setting = TerminalSettings::get_global(cx);
 
         let position = e.position - self.last_content.terminal_bounds.bounds.origin;
@@ -2008,8 +2012,13 @@ impl Terminal {
             if self.selection_phase == SelectionPhase::Ended {
                 let mouse_cell_index =
                     content_index_for_mouse(position, &self.last_content.terminal_bounds);
-                if let Some(link) = self.last_content.cells[mouse_cell_index].hyperlink() {
-                    cx.open_url(link.uri());
+                if let Some(link) = self
+                    .last_content
+                    .cells
+                    .get(mouse_cell_index)
+                    .and_then(|cell| cell.hyperlink())
+                {
+                    cx.emit(Event::Open(self.navigation_target(link.uri(), true)));
                 } else if e.modifiers.secondary() {
                     self.events
                         .push_back(InternalEvent::FindHyperlink(position, true));
@@ -2455,10 +2464,10 @@ fn all_search_matches<'a, T>(
 }
 
 fn content_index_for_mouse(pos: Point<Pixels>, terminal_bounds: &TerminalBounds) -> usize {
-    let col = (pos.x / terminal_bounds.cell_width()).round() as usize;
-    let clamped_col = min(col, terminal_bounds.columns() - 1);
-    let row = (pos.y / terminal_bounds.line_height()).round() as usize;
-    let clamped_row = min(row, terminal_bounds.screen_lines() - 1);
+    let col = (pos.x / terminal_bounds.cell_width()).floor() as usize;
+    let clamped_col = min(col, terminal_bounds.columns().saturating_sub(1));
+    let row = (pos.y / terminal_bounds.line_height()).floor() as usize;
+    let clamped_row = min(row, terminal_bounds.screen_lines().saturating_sub(1));
     clamped_row * terminal_bounds.columns() + clamped_col
 }
 
@@ -3206,6 +3215,140 @@ mod tests {
             "Bare CR should allow overwriting: got '{}'",
             text
         );
+    }
+
+    #[gpui::test]
+    fn test_codex_hyperlinks_open_through_terminal_events(cx: &mut TestAppContext) {
+        for (uri, label, expected) in [
+            (
+                "vscode://file/tmp/changed%20file.rs:42:7",
+                "Open link",
+                MaybeNavigationTarget::PathLike(PathLikeTarget {
+                    maybe_path: "/tmp/changed file.rs:42:7".into(),
+                    terminal_dir: None,
+                }),
+            ),
+            (
+                "zed://git/review?repo=%2Ftmp%2Fproject",
+                "Open link",
+                MaybeNavigationTarget::Url("zed://git/review?repo=%2Ftmp%2Fproject".into()),
+            ),
+            (
+                "zed://git/review?repo=%2Ftmp%2Fproject",
+                "",
+                MaybeNavigationTarget::Url("zed://git/review?repo=%2Ftmp%2Fproject".into()),
+            ),
+            (
+                "zed://git/review/?repo=%2Ftmp%2Fproject",
+                "",
+                MaybeNavigationTarget::Url("zed://git/review/?repo=%2Ftmp%2Fproject".into()),
+            ),
+        ] {
+            let output = if label.is_empty() {
+                format!("(\x1b[4m{uri}\x1b[0m)\r\n")
+            } else {
+                format!("\x1b]8;;{uri}\x1b\\{label}\x1b]8;;\x1b\\\r\n")
+            };
+            let terminal = init_ctrl_click_hyperlink_test(cx, output.as_bytes());
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let _subscription = cx.update(|cx| {
+                let events = events.clone();
+                cx.subscribe(&terminal, move |_, event, _| {
+                    events.lock().push(event.clone())
+                })
+            });
+            terminal.update(cx, |terminal, cx| {
+                terminal.path_style = PathStyle::Posix;
+                let position = point(px(20.0), px(10.0));
+                terminal.mouse_down(
+                    &MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    },
+                    cx,
+                );
+                terminal.mouse_up(
+                    &MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Modifiers::default(),
+                        click_count: 1,
+                    },
+                    cx,
+                );
+            });
+            let window = cx.add_empty_window();
+            window.update(|window, cx| {
+                terminal.update(cx, |terminal, cx| terminal.sync(window, cx));
+            });
+            window.run_until_parked();
+            assert!(
+                events.lock().contains(&Event::Open(expected)),
+                "link was not routed internally: {uri}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn test_review_link_single_click_preserves_selection(cx: &mut TestAppContext) {
+        for (uri, drag, click_count) in [
+            ("zed://git/review?repo=%2Ftmp%2Fproject", true, 1),
+            ("zed://git/review?repo=%2Ftmp%2Fproject", false, 2),
+            ("zed://git/reviewer?repo=%2Ftmp%2Fproject", false, 1),
+            ("https://zed.dev/", false, 1),
+        ] {
+            let terminal = init_ctrl_click_hyperlink_test(cx, uri.as_bytes());
+            terminal.update(cx, |terminal, cx| {
+                let position = point(px(20.0), px(10.0));
+                terminal.mouse_down(
+                    &MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        click_count,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                let release_position = if drag {
+                    let position = position + point(px(10.0), px(0.0));
+                    terminal.mouse_drag(
+                        &MouseMoveEvent {
+                            position,
+                            pressed_button: Some(MouseButton::Left),
+                            ..Default::default()
+                        },
+                        terminal.last_content.terminal_bounds.bounds,
+                        cx,
+                    );
+                    position
+                } else {
+                    position
+                };
+                terminal.mouse_up(
+                    &MouseUpEvent {
+                        button: MouseButton::Left,
+                        position: release_position,
+                        click_count,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                assert!(
+                    terminal
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, InternalEvent::SetSelection(Some(_))))
+                );
+                assert!(!terminal.events.iter().any(|event| matches!(
+                    event,
+                    InternalEvent::ProcessHyperlink(_, true)
+                        | InternalEvent::FindHyperlink(_, true)
+                )));
+            });
+        }
     }
 
     #[gpui::test]

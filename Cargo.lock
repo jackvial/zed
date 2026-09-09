@@ -17620,7 +17620,6 @@ dependencies = [
  "theme_settings",
  "thiserror 2.0.17",
  "url",
- "urlencoding",
  "util",
  "util_macros",
  "windows 0.61.3",

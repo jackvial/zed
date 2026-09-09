@@ -1092,14 +1092,16 @@ fn subscribe_for_terminal_events(
                 }
 
                 Event::Open(maybe_navigation_target) => match maybe_navigation_target {
+                    MaybeNavigationTarget::Url(url) if url.starts_with("zed://") => {
+                        window.dispatch_action(
+                            Box::new(zed_actions::OpenZedUrl { url: url.clone() }),
+                            cx,
+                        );
+                    }
                     MaybeNavigationTarget::Url(url) => cx.open_url(url),
-                    MaybeNavigationTarget::PathLike(path_like_target) => open_path_like_target(
-                        &workspace,
-                        terminal_view,
-                        path_like_target,
-                        window,
-                        cx,
-                    ),
+                    MaybeNavigationTarget::PathLike(path_like_target) => {
+                        open_path_like_target(&workspace, path_like_target, window, cx)
+                    }
                 },
                 Event::BreadcrumbsChanged => cx.emit(ItemEvent::UpdateBreadcrumbs),
                 Event::CloseTerminal => cx.emit(ItemEvent::CloseItem),

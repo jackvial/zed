@@ -415,21 +415,18 @@ fn possible_open_target(
 
 pub(super) fn open_path_like_target(
     workspace: &WeakEntity<Workspace>,
-    terminal_view: &mut TerminalView,
     path_like_target: &PathLikeTarget,
     window: &mut Window,
     cx: &mut Context<TerminalView>,
 ) {
     #[cfg(not(test))]
     {
-        possibly_open_target(workspace, terminal_view, path_like_target, window, cx)
-            .detach_and_log_err(cx)
+        possibly_open_target(workspace, path_like_target, window, cx).detach_and_log_err(cx)
     }
     #[cfg(test)]
     {
         possibly_open_target(
             workspace,
-            terminal_view,
             path_like_target,
             window,
             cx,
@@ -441,15 +438,11 @@ pub(super) fn open_path_like_target(
 
 fn possibly_open_target(
     workspace: &WeakEntity<Workspace>,
-    terminal_view: &mut TerminalView,
     path_like_target: &PathLikeTarget,
     window: &mut Window,
     cx: &mut Context<TerminalView>,
     #[cfg(test)] background_fs_checks: BackgroundFsChecks,
 ) -> Task<Result<Option<OpenTarget>>> {
-    if terminal_view.hover.is_none() {
-        return Task::ready(Ok(None));
-    }
     let workspace = workspace.clone();
     let path_like_target = path_like_target.clone();
     cx.spawn_in(window, async move |terminal_view, cx| {
@@ -542,6 +535,80 @@ mod tests {
     use util::path;
     use workspace::{AppState, MultiWorkspace};
 
+    #[gpui::test]
+    async fn file_link_opens_at_position_without_hover(cx: &mut TestAppContext) {
+        let fs = cx.update(AppState::test).fs.as_fake().clone();
+        cx.update(|cx| {
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        fs.insert_tree(
+            path!("/project"),
+            json!({"changed file.rs": "first\nsecond\nthird\n"}),
+        )
+        .await;
+        let project = Project::test(fs, [Path::new(path!("/project"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+        let terminal = cx.new(|cx| {
+            TerminalBuilder::new_display_only(
+                CursorShape::default(),
+                AlternateScroll::On,
+                None,
+                0,
+                cx.background_executor(),
+                PathStyle::local(),
+            )
+            .expect("create terminal")
+            .subscribe(cx)
+        });
+        let terminal_view = workspace.update_in(cx, |_, window, cx| {
+            cx.new(|cx| {
+                TerminalView::new(
+                    terminal,
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    window,
+                    cx,
+                )
+            })
+        });
+        terminal_view
+            .update_in(cx, |terminal_view, window, cx| {
+                assert!(terminal_view.hover.is_none());
+                possibly_open_target(
+                    &workspace.downgrade(),
+                    &PathLikeTarget {
+                        maybe_path: path!("/project/changed file.rs:2:3").into(),
+                        terminal_dir: None,
+                    },
+                    window,
+                    cx,
+                    BackgroundFsChecks::Disabled,
+                )
+            })
+            .await
+            .expect("open file")
+            .expect("file exists");
+        workspace.update(cx, |workspace, cx| {
+            let editor = workspace
+                .active_item_as::<Editor>(cx)
+                .expect("active editor");
+            editor.update(cx, |editor, cx| {
+                let snapshot = editor.display_snapshot(cx);
+                assert_eq!(
+                    editor
+                        .selections
+                        .newest::<language::Point>(&snapshot)
+                        .head(),
+                    language::Point::new(1, 2)
+                );
+            });
+        });
+    }
+
     async fn init_test(
         app_cx: &mut TestAppContext,
         trees: impl IntoIterator<Item = (&str, serde_json::Value)>,
@@ -619,10 +686,9 @@ mod tests {
                 terminal_view.read_with(cx, |terminal_view, _| terminal_view.hover.clone());
 
             let open_target = terminal_view
-                .update_in(cx, |terminal_view, window, cx| {
+                .update_in(cx, |_, window, cx| {
                     possibly_open_target(
                         &workspace.downgrade(),
-                        terminal_view,
                         &path_like_target,
                         window,
                         cx,

@@ -1130,6 +1130,44 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                     })));
                 });
             }
+            OpenRequestKind::IncrementalReview { repository_path } => {
+                let open_review = cx.spawn(async move |cx| {
+                    let repository_path = app_state.fs.canonicalize(&repository_path).await?;
+                    let workspace::OpenResult { window, .. } = cx
+                        .update(|cx| {
+                            workspace::open_paths(
+                                std::slice::from_ref(&repository_path),
+                                app_state,
+                                workspace::OpenOptions::default(),
+                                cx,
+                            )
+                        })
+                        .await?;
+                    window
+                        .update(cx, |multi_workspace, window, cx| {
+                            multi_workspace.workspace().update(cx, |workspace, cx| {
+                                git_ui::incremental_review::open_for_repository(
+                                    workspace,
+                                    repository_path,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        })?
+                        .await
+                });
+                cx.spawn(async move |cx| {
+                    if let Err(error) = open_review.await {
+                        log::error!("Could not open incremental review: {error:#}");
+                        cx.update(|cx| {
+                            workspace::with_active_or_new_workspace(cx, move |workspace, _, cx| {
+                                workspace.show_error(&error, cx);
+                            });
+                        });
+                    }
+                })
+                .detach();
+            }
             OpenRequestKind::GitCommit { sha } => {
                 cx.spawn(async move |cx| {
                     let paths_with_position =

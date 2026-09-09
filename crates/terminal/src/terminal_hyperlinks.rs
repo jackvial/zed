@@ -17,7 +17,7 @@ use std::{
 use url::Url;
 use util::paths::{PathStyle, UrlExt};
 
-const URL_REGEX: &str = r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`']+"#;
+const URL_REGEX: &str = r#"(ipfs:|ipns:|magnet:|mailto:|gemini://|gopher://|https://|http://|news:|file://|git://|ssh:|ftp://|zed://|vscode://|vscode-insiders://|cursor://|windsurf://)[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩`']+"#;
 const WIDE_CHAR_SPACERS: Flags =
     Flags::from_bits(Flags::LEADING_WIDE_CHAR_SPACER.bits() | Flags::WIDE_CHAR_SPACER.bits())
         .unwrap();
@@ -128,30 +128,33 @@ pub(super) fn find_from_grid_point<T: EventListener>(
     };
 
     found_word.map(|(maybe_url_or_path, is_url, word_match)| {
-        if is_url {
-            // Treat "file://" IRIs like file paths to ensure
-            // that line numbers at the end of the path are
-            // handled correctly.
-            // Use Url::to_file_path() to properly handle Windows drive letters
-            // (e.g., file:///C:/path -> C:\path)
-            if maybe_url_or_path.starts_with("file://") {
-                if let Ok(url) = Url::parse(&maybe_url_or_path) {
-                    if let Ok(path) = url.to_file_path_ext(path_style) {
-                        return (path.to_string_lossy().into_owned(), false, word_match);
-                    }
-                }
-                // Fallback: strip file:// prefix if URL parsing fails
-                let path = maybe_url_or_path
-                    .strip_prefix("file://")
-                    .unwrap_or(&maybe_url_or_path);
-                (path.to_string(), false, word_match)
-            } else {
-                (maybe_url_or_path, true, word_match)
-            }
-        } else {
-            (maybe_url_or_path, false, word_match)
+        if is_url && let Some(path) = path_from_file_url(&maybe_url_or_path, path_style) {
+            return (path, false, word_match);
         }
+        (maybe_url_or_path, is_url, word_match)
     })
+}
+
+pub(super) fn path_from_file_url(uri: &str, path_style: PathStyle) -> Option<String> {
+    let file_url = if uri.starts_with("file://") {
+        uri.to_owned()
+    } else {
+        // Codex emits editor-specific file URIs even when it runs in Zed's terminal.
+        let (scheme, path) = uri.split_once("://file/")?;
+        if !matches!(
+            scheme,
+            "zed" | "vscode" | "vscode-insiders" | "cursor" | "windsurf"
+        ) {
+            return None;
+        }
+        format!("file:///{path}")
+    };
+    if let Ok(url) = Url::parse(&file_url)
+        && let Ok(path) = url.to_file_path_ext(path_style)
+    {
+        return Some(path.to_string_lossy().into_owned());
+    }
+    file_url.strip_prefix("file://").map(str::to_owned)
 }
 
 fn sanitize_url_punctuation<T: EventListener>(
@@ -426,6 +429,35 @@ mod tests {
             .map(|m| m.as_str())
             .collect();
         assert_eq!(results, expected);
+    }
+
+    #[test]
+    fn editor_file_urls_preserve_positions() {
+        for scheme in ["zed", "vscode", "vscode-insiders", "cursor", "windsurf"] {
+            assert_eq!(
+                path_from_file_url(
+                    &format!("{scheme}://file/tmp/space%20%26%20%C3%A9%2520.rs:42:7"),
+                    PathStyle::Posix,
+                )
+                .as_deref(),
+                Some("/tmp/space & é%20.rs:42:7"),
+            );
+            assert_eq!(
+                path_from_file_url(
+                    &format!("{scheme}://file/C:/project/src/main.rs:42:7"),
+                    PathStyle::Windows,
+                )
+                .as_deref(),
+                Some("C:\\project\\src\\main.rs:42:7"),
+            );
+        }
+        for uri in [
+            "zed://git/review?repo=/tmp/project",
+            "vscode://extension/publisher.extension",
+            "https://file/tmp/main.rs:42",
+        ] {
+            assert!(path_from_file_url(uri, PathStyle::Posix).is_none());
+        }
     }
 
     #[test]
@@ -1345,6 +1377,16 @@ mod tests {
         ///
         macro_rules! test_iri {
             ($iri:literal) => { { test_hyperlink!(concat!("‹«👉", $iri, "»›"); Iri) } };
+        }
+
+        #[test]
+        fn incremental_review() {
+            test_iri!("zed://git/review?repo=%2FUsers%2Fjack%2Fproject");
+            test_iri!("zed://git/review?repo=%2Ftmp%2Fspace%20%26%20%23%20%C3%A9");
+            test_hyperlink!(
+                "[Review changes](‹«zed://git/👉review?repo=%2Ftmp%2Fproject»›).";
+                Iri
+            );
         }
 
         #[test]

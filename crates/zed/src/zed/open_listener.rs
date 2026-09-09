@@ -77,6 +77,9 @@ pub enum OpenRequestKind {
     GitCommit {
         sha: String,
     },
+    IncrementalReview {
+        repository_path: PathBuf,
+    },
 }
 
 impl std::fmt::Debug for OpenRequestKind {
@@ -114,6 +117,10 @@ impl std::fmt::Debug for OpenRequestKind {
                 .field("repo_url", repo_url)
                 .finish(),
             Self::GitCommit { sha } => f.debug_struct("GitCommit").field("sha", sha).finish(),
+            Self::IncrementalReview { repository_path } => f
+                .debug_struct("IncrementalReview")
+                .field("repository_path", repository_path)
+                .finish(),
         }
     }
 }
@@ -182,6 +189,8 @@ impl OpenRequest {
                 this.parse_git_clone_url(clone_path)?
             } else if let Some(commit_path) = url.strip_prefix("zed://git/commit/") {
                 this.parse_git_commit_url(commit_path)?
+            } else if let Some(review_path) = url.strip_prefix("zed://git/review") {
+                this.parse_incremental_review_url(review_path)?
             } else if url.starts_with("ssh://") {
                 this.parse_ssh_file_path(&url, cx)?
             } else if let Some(zed_link) = parse_zed_link(&url, cx) {
@@ -261,6 +270,27 @@ impl OpenRequest {
             sha: sha.to_string(),
         });
 
+        Ok(())
+    }
+
+    fn parse_incremental_review_url(&mut self, review_path: &str) -> Result<()> {
+        let (path, query) = review_path
+            .split_once('?')
+            .context("invalid incremental review url: missing repo query parameter")?;
+        anyhow::ensure!(
+            path.is_empty() || path == "/",
+            "invalid incremental review url: unexpected path"
+        );
+        let repository_path = url::form_urlencoded::parse(query.as_bytes())
+            .find_map(|(key, value)| (key == "repo").then_some(value))
+            .filter(|value| !value.is_empty())
+            .context("invalid incremental review url: missing repo query parameter")?;
+        let repository_path = PathBuf::from(repository_path.as_ref());
+        anyhow::ensure!(
+            repository_path.is_absolute(),
+            "invalid incremental review url: repo must be an absolute path"
+        );
+        self.kind = Some(OpenRequestKind::IncrementalReview { repository_path });
         Ok(())
     }
 
@@ -1130,6 +1160,57 @@ mod tests {
         });
 
         assert!(request.kind.is_none());
+    }
+
+    #[gpui::test]
+    fn test_parse_incremental_review_url(cx: &mut TestAppContext) {
+        for repository_path in [path!("/repo"), path!("/repo with spaces/é & #+?")] {
+            for route in ["zed://git/review?", "zed://git/review/?"] {
+                let url = url::form_urlencoded::Serializer::new(route.to_string())
+                    .append_pair("repo", repository_path)
+                    .finish();
+                let request = cx
+                    .update(|cx| {
+                        OpenRequest::parse(
+                            RawOpenRequest {
+                                urls: vec![url],
+                                ..Default::default()
+                            },
+                            cx,
+                        )
+                    })
+                    .expect("parse review link");
+                assert!(matches!(
+                    request.kind,
+                    Some(OpenRequestKind::IncrementalReview { repository_path: path })
+                        if path == Path::new(repository_path)
+                ));
+                assert!(request.open_paths.is_empty());
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn test_reject_invalid_incremental_review_urls(cx: &mut TestAppContext) {
+        for url in [
+            "zed://git/review",
+            "zed://git/review?repo=",
+            "zed://git/review?other=value",
+            "zed://git/review?repo=relative/path",
+            "zed://git/review/unexpected?repo=/repo",
+            "zed://git/reviewer?repo=/repo",
+        ] {
+            let result = cx.update(|cx| {
+                OpenRequest::parse(
+                    RawOpenRequest {
+                        urls: vec![url.into()],
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            assert!(result.is_err(), "accepted invalid review link: {url}");
+        }
     }
 
     #[gpui::test]

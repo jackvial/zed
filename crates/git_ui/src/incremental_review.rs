@@ -9,15 +9,19 @@ use gpui::{
     Subscription, Task, Window, actions,
 };
 use language::{Buffer, BufferEvent, BufferSnapshot, Capability, HighlightedText, OffsetRangeExt};
-use multi_buffer::PathKey;
+use multi_buffer::{PathKey, ToPoint as _};
 use project::{
     Project,
-    git_store::branch_diff::{BranchDiff, BranchDiffEvent, DiffBase},
+    git_store::{
+        Repository,
+        branch_diff::{BranchDiff, BranchDiffEvent, DiffBase},
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
     any::{Any, TypeId},
     ops::Range,
+    path::PathBuf,
     sync::Arc,
 };
 use ui::{Tooltip, prelude::*};
@@ -195,6 +199,39 @@ pub(super) fn register(workspace: &mut Workspace) {
     });
 }
 
+pub fn open_for_repository(
+    workspace: &mut Workspace,
+    repository_path: PathBuf,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Task<Result<()>> {
+    let project = workspace.project().clone();
+    let scans_complete = workspace.worktree_scans_complete(cx);
+    cx.spawn_in(window, async move |workspace, cx| {
+        scans_complete.await;
+        let repository = project
+            .read_with(cx, |project, cx| {
+                project
+                    .repositories(cx)
+                    .values()
+                    .find(|repository| {
+                        repository.read(cx).work_directory_abs_path.as_ref() == repository_path
+                    })
+                    .cloned()
+            })
+            .with_context(|| format!("No Git repository found at {}", repository_path.display()))?;
+        repository
+            .update(cx, |repository, _| repository.barrier())
+            .await
+            .context("Could not load the Git repository for review")?;
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                IncrementalReview::open_repository(workspace, repository, window, cx)
+            })?
+            .await
+    })
+}
+
 struct IncrementalReview {
     editor: Entity<Editor>,
     multibuffer: Entity<MultiBuffer>,
@@ -238,12 +275,21 @@ impl IncrementalReview {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Task<Result<()>> {
-        let project = workspace.project().clone();
-        let Some(repo) = project.read(cx).active_repository(cx) else {
+        let Some(repo) = workspace.project().read(cx).active_repository(cx) else {
             return Task::ready(Err(anyhow!(
                 "Open a local Git repository to review changes"
             )));
         };
+        Self::open_repository(workspace, repo, window, cx)
+    }
+
+    fn open_repository(
+        workspace: &mut Workspace,
+        repo: Entity<Repository>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Task<Result<()>> {
+        let project = workspace.project().clone();
         if !project.read(cx).is_local() {
             return Task::ready(Err(anyhow!(
                 "Incremental review currently supports local projects"
@@ -524,11 +570,20 @@ impl IncrementalReview {
             );
             multibuffer.add_diff(diff, cx);
         });
-        if was_empty
-            && !self.multibuffer.read(cx).is_empty()
-            && self.focus_handle.is_focused(window)
-        {
-            self.editor.focus_handle(cx).focus(window, cx);
+        if was_empty && !self.multibuffer.read(cx).is_empty() {
+            let focus_editor = self.focus_handle.is_focused(window);
+            self.editor.update(cx, |editor, cx| {
+                let snapshot = editor.buffer().read(cx).snapshot(cx);
+                if let Some(hunk) = snapshot.diff_hunks().next() {
+                    let position = hunk.multi_buffer_range.start;
+                    editor.change_selections(Default::default(), window, cx, |selections| {
+                        selections.select_ranges([position..position]);
+                    });
+                }
+                if focus_editor {
+                    editor.focus_handle(cx).focus(window, cx);
+                }
+            });
         }
         cx.emit(EditorEvent::TitleChanged);
         cx.notify();
@@ -544,7 +599,24 @@ impl IncrementalReview {
         let snapshot = editor.buffer().read(cx).snapshot(cx);
         let hunk = editor
             .diff_hunks_in_ranges(&[position..position], &snapshot)
-            .next()?;
+            .next()
+            .or_else(|| {
+                let (buffer, excerpt) = snapshot.excerpt_containing(position..position)?;
+                let row = position.to_point(&snapshot).row;
+                // Context lines belong to the nearest change in the same excerpt.
+                snapshot
+                    .diff_hunks()
+                    .filter(|hunk| {
+                        hunk.buffer_id == buffer.remote_id() && hunk.excerpt_range == excerpt
+                    })
+                    .min_by_key(|hunk| {
+                        hunk.row_range
+                            .start
+                            .0
+                            .saturating_sub(row)
+                            .max(row.saturating_sub(hunk.row_range.end.0.saturating_sub(1)))
+                    })
+            })?;
         let (path, review) = self
             .buffers
             .iter()
@@ -777,7 +849,7 @@ impl Render for IncrementalReview {
                     )))
                     .child(
                         Button::new("review-selected", "Mark Reviewed")
-                            .disabled(count == 0 || branch_changed)
+                            .disabled(count == 0 || branch_changed || loading)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.mark_selected(&MarkReviewed, window, cx)
                             })),
@@ -971,6 +1043,229 @@ mod tests {
         source.update(cx, |source, cx| source.set_text("new edit\n", cx));
         cx.run_until_parked();
         assert_eq!(hunks(&restored, cx)[0].replacement, "new edit\n");
+    }
+
+    #[gpui::test]
+    async fn review_link_selects_repository_and_reuses_tab(cx: &mut TestAppContext) {
+        use fs::FakeFs;
+        use serde_json::json;
+        use std::path::Path;
+        use util::path;
+        use workspace::MultiWorkspace;
+
+        cx.update(|cx| {
+            let settings = SettingsStore::test(cx);
+            cx.set_global(settings);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let fs = FakeFs::new(cx.executor());
+        for root in [path!("/first"), path!("/second")] {
+            fs.insert_tree(root, json!({".git": {}, "file.txt": "after\n"}))
+                .await;
+            let git_path = Path::new(root).join(".git");
+            fs.set_head_for_repo(&git_path, &[("file.txt", "before\n".into())], "baseline");
+            fs.set_index_for_repo(&git_path, &[("file.txt", "before\n".into())]);
+            fs.set_merge_base_content_for_repo(&git_path, &[("file.txt", "before\n".into())]);
+        }
+        let project = Project::test(
+            fs,
+            [Path::new(path!("/first")), Path::new(path!("/second"))],
+            cx,
+        )
+        .await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+        cx.run_until_parked();
+        let first = project.read_with(cx, |project, cx| {
+            project
+                .repositories(cx)
+                .values()
+                .find(|repository| {
+                    repository.read(cx).work_directory_abs_path.as_ref()
+                        == Path::new(path!("/first"))
+                })
+                .cloned()
+                .expect("first repository")
+        });
+        first.update(cx, |repository, cx| repository.set_as_active_repository(cx));
+        for _ in 0..2 {
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    open_for_repository(workspace, path!("/second").into(), window, cx)
+                })
+                .await
+                .expect("open linked review");
+            workspace.read_with(cx, |workspace, cx| {
+                assert_eq!(workspace.items_of_type::<IncrementalReview>(cx).count(), 1);
+                let review = workspace
+                    .active_item_as::<IncrementalReview>(cx)
+                    .expect("active review");
+                let repository = review
+                    .read(cx)
+                    .branch_diff
+                    .read(cx)
+                    .repo()
+                    .expect("review repository");
+                assert_eq!(
+                    repository.read(cx).work_directory_abs_path.as_ref(),
+                    Path::new(path!("/second"))
+                );
+            });
+        }
+        let result = workspace
+            .update_in(cx, |workspace, window, cx| {
+                open_for_repository(workspace, path!("/missing").into(), window, cx)
+            })
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[gpui::test]
+    async fn mark_reviewed_from_context_selects_nearest_block_in_excerpt(cx: &mut TestAppContext) {
+        use fs::FakeFs;
+        use language::Point;
+        use serde_json::json;
+        use std::path::Path;
+        use util::path;
+        use workspace::MultiWorkspace;
+
+        cx.update(|cx| {
+            let settings = SettingsStore::test(cx);
+            cx.set_global(settings);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            crate::init(cx);
+        });
+        let lines = (0..40)
+            .map(|row| format!("line {row}\n"))
+            .collect::<Vec<_>>();
+        let base = lines.concat();
+        let mut expected = lines.clone();
+        let current = lines
+            .iter()
+            .enumerate()
+            .map(|(row, line)| match row {
+                5 | 9 | 30 => format!("changed {row}\n"),
+                _ => line.clone(),
+            })
+            .collect::<String>();
+        let fs = FakeFs::new(cx.executor());
+        fs.insert_tree(
+            path!("/review-context"),
+            json!({".git": {}, "file.txt": current}),
+        )
+        .await;
+        let git_path = Path::new(path!("/review-context/.git"));
+        fs.set_head_for_repo(git_path, &[("file.txt", base.clone())], "baseline");
+        fs.set_index_for_repo(git_path, &[("file.txt", base.clone())]);
+        fs.set_merge_base_content_for_repo(git_path, &[("file.txt", base.clone())]);
+        let project = Project::test(fs.clone(), [Path::new(path!("/review-context"))], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+        cx.run_until_parked();
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                IncrementalReview::open(workspace, window, cx)
+            })
+            .await
+            .expect("open review");
+        cx.run_until_parked();
+        let review = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_item_as::<IncrementalReview>(cx)
+                .expect("review tab")
+        });
+        review.read_with(cx, |review, cx| {
+            let position = review.editor.read(cx).selections.newest_anchor().head();
+            let (_, captured) = review
+                .capture_at(&review.editor, position, cx)
+                .expect("initial block");
+            assert_eq!(captured.replacement, "changed 5\n");
+            let snapshot = review.multibuffer.read(cx).snapshot(cx);
+            let hunks = snapshot.diff_hunks().collect::<Vec<_>>();
+            assert_eq!(hunks.len(), 3);
+            assert_eq!(hunks[0].excerpt_range, hunks[1].excerpt_range);
+            assert_ne!(hunks[1].excerpt_range, hunks[2].excerpt_range);
+        });
+        for (remaining, (context_row, changed_row)) in
+            [(11, 9), (3, 5), (32, 30)].into_iter().enumerate()
+        {
+            review.update_in(cx, |review, window, cx| {
+                let source = review
+                    .buffers
+                    .get("file.txt")
+                    .expect("tracked file")
+                    .read(cx)
+                    .source
+                    .clone();
+                let anchor = source.read(cx).anchor_before(Point::new(context_row, 0));
+                let snapshot = review.multibuffer.read(cx).snapshot(cx);
+                let position = snapshot
+                    .anchor_in_excerpt(anchor)
+                    .expect("context in excerpt");
+                assert!(
+                    review
+                        .editor
+                        .read(cx)
+                        .diff_hunks_in_ranges(&[position..position], &snapshot)
+                        .next()
+                        .is_none()
+                );
+                review.editor.update(cx, |editor, cx| {
+                    editor.change_selections(Default::default(), window, cx, |selections| {
+                        selections.select_ranges([position..position]);
+                    });
+                });
+                review.mark_selected(&MarkReviewed, window, cx);
+            });
+            cx.run_until_parked();
+            expected[changed_row] = format!("changed {changed_row}\n");
+            review.read_with(cx, |review, cx| {
+                assert_eq!(
+                    review.state.baselines.get("file.txt"),
+                    Some(&expected.concat())
+                );
+                assert_eq!(
+                    review
+                        .multibuffer
+                        .read(cx)
+                        .snapshot(cx)
+                        .diff_hunks()
+                        .count(),
+                    2 - remaining
+                );
+                assert!(review.error.is_none());
+                assert_eq!(
+                    review
+                        .buffers
+                        .get("file.txt")
+                        .expect("tracked file")
+                        .read(cx)
+                        .source
+                        .read(cx)
+                        .text(),
+                    current
+                );
+            });
+        }
+        assert_eq!(
+            fs.read_file_sync(path!("/review-context/file.txt"))
+                .expect("source file"),
+            current.as_bytes()
+        );
+        assert_eq!(
+            fs.with_git_state(git_path, false, |state| state
+                .index_contents
+                .get(&RepoPath::new("file.txt").expect("file path"))
+                .cloned())
+                .expect("index")
+                .as_deref(),
+            Some(base.as_str())
+        );
     }
 
     #[gpui::test]

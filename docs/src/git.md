@@ -102,7 +102,9 @@ coding agent, a terminal, or your own edits. The first review includes your curr
 uncommitted text changes. Keep the review tab open to see further changes appear.
 
 Click **Reviewed** beside a changed block, or use {#kb review::MarkReviewed}, to
-check it off and move to the next change. The review tab is read-only. You can
+check it off and move to the next change. The **Mark Reviewed** toolbar button
+reviews the block nearest the cursor in the current excerpt, including when the
+cursor is on surrounding context. The review tab is read-only. You can
 expand excerpts to see more context or open the source file to edit it, as in other
 [multibuffers](./multibuffers.md).
 
@@ -120,6 +122,38 @@ previous branch's review pauses until you return to that branch.
 
 Incremental review supports local Git repositories with an initial commit. It
 reviews text changes; use the Git Panel for binary files and empty-file changes.
+
+### Links from Codex in the terminal
+
+You can keep launching Codex with `codex` in Zed's terminal. Add the following to
+your `~/.codex/AGENTS.md` (or your project's `AGENTS.md`) to request review links
+after edits:
+
+```markdown
+When running in Zed's terminal (TERM_PROGRAM=zed), end each turn that changes
+files with a link to Incremental Review:
+zed://git/review?repo=<URL-encoded absolute Git repository root>
+Use git rev-parse --show-toplevel to find the repository root, including when
+working in a Git worktree. Encode the root as a URL query parameter. Include one
+link for each repository you changed, and omit review links when no files changed.
+For changed files, include Markdown links with absolute paths and a relevant
+one-based line number, optionally followed by a column: [file.rs](/path/file.rs:42:7).
+For deleted files, point to the review instead.
+```
+
+Codex loads these [custom instructions](https://developers.openai.com/codex/guides/agents-md/)
+when starting a session. Restart Codex after adding them.
+
+For example, `zed://git/review?repo=%2FUsers%2Fyou%2Fproject` opens Incremental
+Review for `/Users/you/project`. It reuses an existing review tab and preserves
+your reviewed blocks. The review includes all pending changes in that repository.
+
+Click a review URL to open it in the running Zed instance, including when Codex
+displays it as underlined text. For other terminal links, hold `Cmd` on macOS or
+`Ctrl` on Linux and Windows while clicking. File paths such as
+`src/main.rs:42:7` and Codex's file citation links open the file at line 42,
+column 7. Zed handles `zed://file/`, `vscode://file/`, `vscode-insiders://file/`,
+`cursor://file/`, and `windsurf://file/` links internally in its terminal.
 
 ## File History
 
