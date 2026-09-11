@@ -398,6 +398,7 @@ dependencies = [
  "serde_json",
  "serde_json_lenient",
  "settings",
+ "sha2",
  "smol",
  "streaming_diff",
  "task",
@@ -418,6 +419,7 @@ dependencies = [
  "uuid",
  "vim",
  "watch",
+ "which 6.0.3",
  "workspace",
  "zed_actions",
 ]

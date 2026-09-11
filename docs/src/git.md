@@ -95,6 +95,52 @@ See [Configuring Zed](./configuring-zed.md) for more about the Settings Editor.
 
 You can switch between modes at any time. Your preference applies to [Project Diff](#project-diff), [File History](#file-history), and [Stash Diff View](#stash-diff-view). These diff views function as [multibuffers](./multibuffers.md), allowing you to edit multiple excerpts simultaneously.
 
+## Guided Review {#guided-review}
+
+Use {#action review::OpenGuidedReview} to open a separate review tab that groups
+your branch's changed files by concept. Guided Review compares your current
+branch with its merge base against the local `dev` branch. It includes committed,
+staged, working tree, untracked, and unsaved text changes.
+
+Install the Codex CLI and sign in with `codex login` before generating a guide.
+Zed sends the captured changes to Codex to group related files. Large changes may
+be truncated for grouping; the review still displays the full diff.
+
+Select a concept in the numbered sidebar to read its description, then select a
+file to jump to its diff. Press **Option+Enter** on macOS (**Alt+Enter** on Linux
+and Windows), or click **Open File**, to open the focused file at the selected
+location in the split to the right. Zed creates that split if needed and reuses
+it for subsequent files.
+The editable file shows expanded diffs against the same `dev` merge base as the
+guide, and those diffs update as you edit.
+Check **Reviewed** on a block, file, or concept to mark it reviewed. Uncheck it to
+review it again. Use **Unreviewed**, **Reviewed**, and **All** to filter the blocks,
+or **Undo** to reverse your last checkbox change.
+
+Progress is saved locally for each repository folder and branch, separately from
+[Incremental Review](#incremental-review). Reviewing does not edit, stage, or
+commit your files.
+
+Click **Regenerate Guided Review** to capture the latest changes and ask Codex to
+group them again. Unchanged blocks keep their reviewed state. When your files or
+branch change, regenerate before checking off more blocks. **Cancel** stops
+generation and keeps the loaded review available.
+
+Click **Review prompt** beside the regeneration button to view and edit the
+instructions used to generate the guide. Your edits are saved for the current
+branch. Click **Regenerate Guided Review** to apply them to both the grouping and
+concept descriptions. Zed attaches the current branch changes automatically.
+
+Generation opens a **Codex Guided Review** terminal tab with live model output
+and errors. Return to the Guided Review tab to continue reviewing or cancel the
+run. **Codex output** reopens the latest run's output.
+
+Guided Review requires a local Git repository with an initial commit and a local
+`dev` branch. Binary and unreadable files are omitted without blocking the rest
+of the review. Expand the omitted-file notice to see their paths and reasons;
+these files are excluded from review progress. Use the Git Panel for binary
+changes.
+
 ## Incremental Review {#incremental-review}
 
 Use {#action review::OpenIncrementalReview} to inspect changes from an external

@@ -14,6 +14,7 @@ mod diagnostics;
 mod entry_view_state;
 mod external_source_prompt;
 mod favorite_models;
+mod guided_review;
 mod inline_assistant;
 mod inline_prompt_editor;
 mod language_model_selector;
@@ -431,6 +432,7 @@ pub fn init(
         init_language_model_settings(cx);
     }
     agent_panel::init(cx);
+    guided_review::init(cx);
     context_server_configuration::init(language_registry.clone(), fs.clone(), cx);
     thread_metadata_store::init(cx);
 

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+port="${1:-8000}"
+
+preview_directory="$(mktemp -d)"
+trap 'rm -rf -- "$preview_directory"' EXIT
+ln -s "$repository_root/guided-review-mockup.html" "$preview_directory/index.html"
+
+printf 'Open http://127.0.0.1:%s/\n' "$port"
+printf 'Press Ctrl+C to stop.\n'
+
+python3 -m http.server "$port" --bind 127.0.0.1 --directory "$preview_directory"

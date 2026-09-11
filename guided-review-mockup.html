@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Guided Review · Zed</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #dce0e5; background: #282c33; --muted: #a9afbc; --border: #464b57; --accent: #74ade8; --green: #a1c181; }
+    * { box-sizing: border-box; } body { margin: 0; }
+    button { font: inherit; color: inherit; cursor: pointer; border: 0; background: transparent; }
+    button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    button:disabled { cursor: default; }
+    svg { width: 16px; height: 16px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .app { height: 100dvh; display: grid; grid-template-rows: 34px 37px 43px minmax(0, 1fr) 25px; }
+    .titlebar, .toolbar, .statusbar, .row { display: flex; align-items: center; }
+    .titlebar { padding: 0 15px; gap: 12px; border-bottom: 1px solid #363c46; font-size: 12px; background: #3b414d; }
+    .window-controls { display: flex; gap: 8px; margin-right: 13px; }
+    .window-controls i { width: 11px; height: 11px; border-radius: 50%; background: #ff6058; }
+    .window-controls i:nth-child(2) { background: #ffbd2e; } .window-controls i:nth-child(3) { background: #28c840; }
+    .titlebar .divider { color: #7a8291; } .branch { color: #ccd1da; gap: 7px; }
+    .preview { margin-left: auto; color: #b5bbc6; font-size: 11px; }
+    .tabbar { background: #2f343e; border-bottom: 1px solid #363c46; display: flex; align-items: stretch; }
+    .heading { gap: 8px; padding: 0 17px; border-right: 1px solid #363c46; background: #282c33; box-shadow: inset 0 1px var(--accent); }
+    .heading svg { color: #a9afbc; width: 15px; height: 15px; }
+    h1 { font-size: 13px; font-weight: 450; margin: 0; }
+    .toolbar { justify-content: space-between; gap: 16px; padding: 0 19px; border-bottom: 1px solid #363c46; }
+    .scope { color: var(--muted); font-size: 12px; }
+    .filters { display: flex; gap: 4px; }
+    .filter { padding: 3px 9px; border: 1px solid transparent; border-radius: 4px; font-size: 12px; color: #a9afbc; }
+    .filter[aria-pressed="true"] { border-color: #464b57; background: #363c46; color: #dce0e5; }
+    .filter span { margin-left: 6px; color: #a9afbc; font-variant-numeric: tabular-nums; }
+    .workspace { display: grid; grid-template-columns: minmax(310px, 27%) minmax(0, 1fr); min-height: 0; }
+    .sidebar { border-right: 1px solid #464b57; padding: 28px 19px 24px 10px; overflow: auto; }
+    .sidebar-label { margin-left: 35px; padding-bottom: 23px; justify-content: space-between; font-size: 12px; color: #a9afbc; }
+    .codex { gap: 5px; color: #878a98; font-size: 11px; } .codex svg { width: 12px; height: 12px; }
+    #groups { display: grid; grid-template-columns: 23px minmax(0, 1fr); gap: 12px; }
+    .concept-rail { display: flex; flex-direction: column; gap: 9px; padding-top: 4px; }
+    .rail-button { width: 22px; height: 24px; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: #878a98; border-radius: 3px; }
+    .rail-button[aria-current="true"] { color: #a9d0f7; background: #74ade820; box-shadow: inset 2px 0 #74ade8; }
+    .rail-button svg { width: 12px; height: 12px; }
+    .rail-button[data-reviewed="true"] { color: var(--green); }
+    .rail-button:hover { background: #363c46; }
+    .concept-heading { margin-bottom: 24px; }
+    h2 { font-size: 21px; line-height: 1.35; font-weight: 550; letter-spacing: -.4px; margin: 0 0 12px; }
+    .concept-meta { gap: 10px; font-size: 12px; color: #a9afbc; }
+    .concept-meta .number { color: #dce0e5; font-variant-numeric: tabular-nums; }
+    .group-review { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+    .group-review input { margin: 0; width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+    .concept-meta .navigation { margin-left: auto; }
+    .navigation { gap: 4px; }
+    .icon-button { border: 1px solid #464b57; border-radius: 3px; width: 25px; height: 24px; display: grid; place-items: center; color: #a9afbc; }
+    .icon-button svg { width: 13px; height: 13px; } .icon-button:hover { background: #363c46; } .icon-button:disabled { opacity: .3; }
+    .file-links { display: flex; flex-direction: column; gap: 7px; }
+    .file-link { width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 9px; border: 1px solid #363c46; border-radius: 4px; background: #2f343e; text-align: left; }
+    .file-link:hover { background: #363c46; } .file-link[aria-current="true"] { border-color: #47679e; background: #74ade810; }
+    .file-link:disabled { opacity: .45; } .file-description { flex: 1; min-width: 0; }
+    .file-link .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #dce0e5; }
+    .file-directory { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: #878a98; margin-top: 2px; }
+    .file-icon { color: #dec184; font: 10px/15px ui-monospace, monospace; width: 16px; flex-shrink: 0; text-align: center; }
+    .file-link .file-total { color: #a9afbc; font: 10px ui-monospace, monospace; }
+    .content { overflow: auto; padding: 29px 26px 60px; scroll-behavior: smooth; }
+    .diff-file { border: 1px solid #464b57; border-radius: 4px; overflow: hidden; margin-bottom: 24px; scroll-margin-top: 18px; }
+    .file-header { gap: 9px; padding: 10px 13px; background: #2f343e; font-size: 12px; min-height: 42px; }
+    .file-header strong { font-weight: 500; }
+    .file-path { color: #878a98; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .stats { margin-left: auto; display: flex; gap: 8px; white-space: nowrap; font: 11px ui-monospace, monospace; }
+    .added-count { color: #a1c181; } .removed-count { color: #d07277; }
+    .hunk + .hunk { border-top: 1px solid #464b57; }
+    .hunk-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 35px; padding: 5px 12px; background: #2b3039; border-bottom: 1px solid #363c46; }
+    .hunk-label { color: #878a98; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .review-button { border: 1px solid #464b57; background: #2e343e; border-radius: 3px; padding: 2px 7px; font-size: 11px; display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .review-button { cursor: pointer; }
+    .review-button input { margin: 0; width: 12px; height: 12px; accent-color: var(--accent); cursor: pointer; }
+    .review-button:hover { background: #363c46; }
+    .review-button:has(input:checked) { border-color: transparent; color: #a1c181; }
+    .code { padding: 9px 0; background: #282c33; overflow: auto; font: 12px/24px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .code-line { display: grid; grid-template-columns: 39px 39px 21px minmax(max-content, 1fr); min-width: 100%; width: max-content; padding-right: 22px; }
+    .code-line.addition { background: #a1c18114; } .code-line.deletion { background: #d072771a; }
+    .line-number { color: #697480; text-align: right; padding-right: 10px; user-select: none; font-size: 11px; }
+    .addition .line-number, .addition .sign { color: #879a76; } .deletion .line-number, .deletion .sign { color: #c07b80; }
+    .sign { color: #697480; user-select: none; } .source { white-space: pre; color: #acb2be; }
+    .keyword { color: #c678dd; } .string { color: #a1c181; } .type { color: #e5c07b; } .comment { color: #7f848e; }
+    .statusbar { border-top: 1px solid #464b57; justify-content: space-between; padding: 0 13px; gap: 15px; color: #b8bfca; background: #3b414d; font-size: 11px; }
+    .progress { display: flex; align-items: center; gap: 9px; } .progress-track { width: 70px; height: 3px; background: #545b68; border-radius: 3px; overflow: hidden; }
+    .progress-fill { height: 100%; background: #74ade8; transition: width .2s; }
+    .empty { text-align: center; padding: 100px 20px; color: #a9afbc; } .empty svg { width: 26px; height: 26px; color: #a1c181; margin-bottom: 12px; }
+    .empty strong { display: block; color: #dce0e5; font-size: 16px; font-weight: 500; margin-bottom: 5px; }
+    .toast { position: fixed; bottom: 42px; left: 50%; transform: translateX(-50%); background: #2f343e; border: 1px solid #464b57; border-radius: 4px; padding: 9px 15px; font-size: 12px; box-shadow: 0 6px 24px #0005; }
+    .toast[hidden] { display: none; } .toast button { color: #74ade8; margin-left: 14px; }
+    @media (min-width: 1700px) { .sidebar { padding: 35px 27px 24px 13px; } .content { padding: 35px 33px; } .code { font-size: 13px; line-height: 25px; } }
+    @media (max-width: 850px) { .workspace { grid-template-columns: 275px minmax(0, 1fr); } .content { padding: 24px 14px; } .file-path { display: none; } .window-controls { display: none; } h2 { font-size: 18px; } }
+    @media (max-width: 620px) { .workspace { grid-template-columns: 1fr; grid-template-rows: 230px minmax(0, 1fr); } .sidebar { padding: 14px 16px 12px 8px; border-right: 0; border-bottom: 1px solid #464b57; } .sidebar-label { display: none; } .concept-heading { margin-bottom: 12px; } h2 { font-size: 17px; } .titlebar { padding: 0 12px; gap: 8px; } .branch { overflow: hidden; white-space: nowrap; } .preview { display: none; } .scope { font-size: 10px; } .filter { font-size: 11px; padding: 3px 5px; } .toolbar { padding: 0 12px; gap: 7px; } .statusbar > span { display: none; } .file-directory { display: none; } .file-link { padding: 7px; } }
+    @media (prefers-reduced-motion: reduce) { .content { scroll-behavior: auto; } .progress-fill { transition: none; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar"><div class="window-controls" aria-hidden="true"><i></i><i></i><i></i></div><strong>zed-incremental-review</strong><span class="divider">/</span><span class="branch row" id="branch"></span><span class="preview">HTML mockup · sample changes</span></header>
+    <div class="tabbar"><div class="heading row" id="heading"></div></div>
+    <div class="toolbar"><div class="scope">Changes since your last review</div><div class="filters" role="group" aria-label="Review status"><button class="filter" data-filter="unreviewed">Unreviewed <span></span></button><button class="filter" data-filter="reviewed">Reviewed <span></span></button></div></div>
+    <div class="workspace"><aside class="sidebar" aria-label="Concept groups"><div class="sidebar-label row"><span>Concepts</span><span class="codex row" id="codex"></span></div><nav id="groups" aria-label="Files grouped by concept"></nav></aside><main class="content" id="content" aria-label="Selected concept changes"></main></div>
+    <footer class="statusbar"><div class="progress" id="progress"></div><span>Local branch · nothing staged or committed</span><span id="totals"></span></footer>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script>
+    const paths = { branch: '<circle cx="6" cy="4" r="2"/><circle cx="6" cy="13" r="2"/><circle cx="13" cy="4" r="2"/><path d="M6 6v5m7-5c0 4-7 2-7 5"/>', layers: '<path d="m8 1 7 4-7 4-7-4 7-4Zm-7 8 7 4 7-4M1 13l7 4 7-4"/>', check: '<path d="m3 8 3 3 7-7"/>', left: '<path d="m10 3-5 5 5 5"/>', right: '<path d="m6 3 5 5-5 5"/>', sparkle: '<path d="m8 1 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/>' };
+    const icon = name => `<svg viewBox="0 0 17 18" aria-hidden="true">${paths[name]}</svg>`;
+    const escape = value => String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+    const block = (id, label, before, after, source, reviewed = false) => ({ id, label, before, after, lines: source.split('\n'), reviewed });
+    const concepts = [
+      { title: 'Keep reviews on the current branch', files: [
+        { path: 'crates/git_ui/src/incremental_review.rs', blocks: [block('branch-key', 'fn repository_key', 251, 251, `     fn repository_key(repository: &Repository) -> Option<String> {
+         let commit = repository.head_commit.as_ref()?;
+-        Some(repository.work_directory_abs_path.display().to_string())
++        let branch = repository.branch.as_ref()
++            .map(|branch| branch.ref_name.as_ref())
++            .unwrap_or(&commit.sha);
++        Some(format!(
++            "incremental-review:{}:{branch}",
++            repository.work_directory_abs_path.display()
++        ))
+     }`), block('branch-change', 'fn refresh', 421, 427, `     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
++        if self.branch_changed(cx) {
++            self.loading = false;
++            cx.notify();
++            return;
++        }
+         self.loading = true;
+         cx.notify();
+     }`)] },
+        { path: 'crates/project/src/git_store/branch_diff.rs', blocks: [block('revision', 'DiffBase', 24, 24, ` pub enum DiffBase {
+     Head,
+     Merge { base_ref: SharedString },
++    Revision { base_ref: SharedString },
+ }`)] }
+      ] },
+      { title: 'Remember accepted blocks', files: [
+        { path: 'crates/git_ui/src/review_session.rs', blocks: [block('history', 'ReviewState', 46, 46, ` #[derive(Serialize, Deserialize)]
+ struct ReviewState {
+     base_commit: String,
+     baselines: BTreeMap<String, String>,
++    #[serde(default)]
++    accepted_blocks: Vec<AcceptedBlock>,
+ }
++
++#[derive(Serialize, Deserialize)]
++struct AcceptedBlock {
++    path: String,
++    before: String,
++    after: String,
++}`), block('capture', 'fn mark_reviewed', 169, 180, `     let before = base_text.get(hunk.base_range.clone())
+         .context("The review baseline changed")?;
++    self.accepted_blocks.push(AcceptedBlock {
++        path: path.to_owned(),
++        before: before.to_owned(),
++        after: hunk.replacement.clone(),
++    });
+     base_text.replace_range(hunk.base_range.clone(), &hunk.replacement);`, true)] },
+        { path: 'crates/git_ui/src/review_session_tests.rs', blocks: [block('history-test', 'accepted_blocks_survive_reopening', 0, 1, `+#[gpui::test]
++fn accepted_blocks_survive_reopening(cx: &mut TestAppContext) {
++    let session = review_session("before\\n", "after\\n", cx);
++    accept_first_block(&session, cx);
++    let restored = reopen_session(&session, cx);
++    restored.read_with(cx, |session, _| {
++        assert_eq!(session.accepted_blocks.len(), 1);
++        assert_eq!(session.accepted_blocks[0].after, "after\\n");
++    });
++}`)] }
+      ] },
+      { title: 'Navigate changes by concept', files: [
+        { path: 'crates/agent_ui/src/guided_review.rs', blocks: [block('concept', 'ConceptGroup', 0, 1, `+#[derive(Deserialize)]
++struct ConceptGroup {
++    title: String,
++    files: Vec<RepoPath>,
++}
++
++struct GuidedReview {
++    session: Entity<ReviewSession>,
++    groups: Vec<ConceptGroup>,
++    selected_group: usize,
++    editor: Entity<Editor>,
++}`), block('selection', 'fn select_group', 0, 32, `+fn select_group(&mut self, index: usize, cx: &mut Context<Self>) {
++    let Some(group) = self.groups.get(index) else {
++        return;
++    };
++    self.selected_group = index;
++    self.show_files(group.files.clone(), cx);
++    cx.notify();
++}`)] },
+        { path: 'crates/agent_ui/src/agent_ui.rs', blocks: [block('register', 'review actions', 42, 42, ` actions!(
+     review,
+     [
+         OpenIncrementalReview,
++        OpenGuidedReview,
+     ]
+ );`, true)] }
+      ] }
+    ];
+    let selected = 0;
+    let selectedFile = 0;
+    let filter = 'unreviewed';
+    let lastReviewChange = [];
+    let toastTimer;
+    const allFiles = () => concepts.flatMap(concept => concept.files);
+    const allBlocks = () => allFiles().flatMap(file => file.blocks);
+    const visibleBlocks = file => file.blocks.filter(item => item.reviewed === (filter === 'reviewed'));
+    const groupBlocks = group => group.files.flatMap(file => file.blocks);
+    const groupReviewed = group => groupBlocks(group).every(item => item.reviewed);
+    function highlight(source) {
+      return source.split(/(\/\/.*|"(?:\\.|[^"\\])*"|\b(?:fn|let|mut|pub|struct|enum|impl|return|if|else|self|true|false|use|mod)\b|\b[A-Z][A-Za-z0-9_]*\b)/g).map(token => {
+        const kind = token.startsWith('//') ? 'comment' : token.startsWith('"') ? 'string' : /^[A-Z]/.test(token) ? 'type' : /^(fn|let|mut|pub|struct|enum|impl|return|if|else|self|true|false|use|mod)$/.test(token) ? 'keyword' : '';
+        return kind ? `<span class="${kind}">${escape(token)}</span>` : escape(token);
+      }).join('');
+    }
+    function renderBlock(item) {
+      let before = item.before, after = item.after;
+      const lines = item.lines.map(line => {
+        const sign = line.charAt(0), addition = sign === '+', deletion = sign === '-';
+        const oldNumber = addition ? '' : before++, newNumber = deletion ? '' : after++;
+        return `<div class="code-line ${addition ? 'addition' : deletion ? 'deletion' : ''}"><span class="line-number">${oldNumber}</span><span class="line-number">${newNumber}</span><span class="sign">${escape(sign)}</span><span class="source">${highlight(line.slice(1))}</span></div>`;
+      }).join('');
+      return `<section class="hunk"><div class="hunk-header"><span class="hunk-label">${escape(item.label)}</span><label class="review-button"><input type="checkbox" data-block="${item.id}" ${item.reviewed ? 'checked' : ''} aria-label="Reviewed block: ${escape(item.label)}">Reviewed</label></div><div class="code" tabindex="0" role="region" aria-label="Diff for ${escape(item.label)}">${lines}</div></section>`;
+    }
+    function render() {
+      const blocks = allBlocks(), accepted = blocks.filter(item => item.reviewed).length;
+      document.querySelectorAll('[data-filter]').forEach(button => { const isReviewed = button.dataset.filter === 'reviewed'; button.setAttribute('aria-pressed', String(button.dataset.filter === filter)); button.querySelector('span').textContent = isReviewed ? accepted : blocks.length - accepted; });
+      const concept = concepts[selected], files = concept.files.filter(file => visibleBlocks(file).length);
+      if (!files.includes(concept.files[selectedFile])) selectedFile = concept.files.indexOf(files[0]);
+      document.getElementById('groups').innerHTML = `<div class="concept-rail">${concepts.map((group, index) => `<button class="rail-button" data-group="${index}" aria-current="${index === selected}" data-reviewed="${groupReviewed(group)}" aria-label="${escape(group.title)}${groupReviewed(group) ? ", reviewed" : ""}" title="${escape(group.title)}">${groupReviewed(group) ? icon('check') : String(index + 1).padStart(2, '0')}</button>`).join('')}</div><div><div class="concept-heading"><h2>${escape(concept.title)}</h2><div class="concept-meta row"><span class="number">${String(selected + 1).padStart(2, '0')} / ${String(concepts.length).padStart(2, '0')}</span><label class="group-review"><input id="group-reviewed" type="checkbox" aria-label="Concept reviewed">Reviewed</label><div class="navigation row"><button class="icon-button" data-step="-1" aria-label="Previous concept" ${selected === 0 ? 'disabled' : ''}>${icon('left')}</button><button class="icon-button" data-step="1" aria-label="Next concept" ${selected === concepts.length - 1 ? 'disabled' : ''}>${icon('right')}</button></div></div></div><div class="file-links">${concept.files.map((file, index) => `<button class="file-link" data-file="${index}" aria-current="${index === selectedFile}" title="${escape(file.path)}" ${visibleBlocks(file).length ? '' : 'disabled'}><span class="file-icon">rs</span><span class="file-description"><span class="name">${escape(file.path.split('/').pop())}</span><span class="file-directory">${escape(file.path.slice(0, file.path.lastIndexOf('/')))}</span></span><span class="file-total">${visibleBlocks(file).length || (file.blocks.every(item => item.reviewed) ? '✓' : '—')}</span></button>`).join('')}</div></div>`;
+      const checkbox = document.getElementById('group-reviewed');
+      checkbox.checked = groupReviewed(concept);
+      checkbox.indeterminate = !checkbox.checked && groupBlocks(concept).some(item => item.reviewed);
+      document.getElementById('content').innerHTML = files.length ? files.map(file => {
+        const lines = visibleBlocks(file).flatMap(item => item.lines), added = lines.filter(line => line.startsWith('+')).length, removed = lines.filter(line => line.startsWith('-')).length;
+        return `<article class="diff-file" id="file-${concept.files.indexOf(file)}"><header class="file-header row"><span class="file-icon">rs</span><strong>${escape(file.path.split('/').pop())}</strong><span class="file-path">${escape(file.path.slice(0, file.path.lastIndexOf('/')))}</span><span class="stats">${added ? `<span class="added-count">+${added}</span>` : ''}${removed ? `<span class="removed-count">−${removed}</span>` : ''}</span></header>${visibleBlocks(file).map(renderBlock).join('')}</article>`;
+      }).join('') : `<div class="empty">${icon('check')}<strong>${filter === 'reviewed' ? 'No reviewed blocks in this concept' : 'This concept is reviewed'}</strong><span>${filter === 'reviewed' ? 'Blocks you accept will appear here.' : 'Continue to the next concept, or revisit accepted blocks in Reviewed.'}</span></div>`;
+      document.getElementById('progress').innerHTML = `<div class="progress-track"><div class="progress-fill" style="width:${accepted / blocks.length * 100}%"></div></div><span>${accepted} of ${blocks.length} blocks reviewed</span>`;
+      document.getElementById('totals').textContent = `${concepts.length} concepts · ${allFiles().length} files`;
+    }
+    function setReviewed(items, reviewed, message) {
+      const changed = items.filter(item => item.reviewed !== reviewed);
+      if (!changed.length) return;
+      lastReviewChange = changed.map(item => ({ item, reviewed: item.reviewed }));
+      changed.forEach(item => { item.reviewed = reviewed; });
+      render();
+      const toast = document.getElementById('toast');
+      toast.innerHTML = `${escape(message)}<button data-undo="true">Undo</button>`;
+      toast.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toast.hidden = true; }, 5000);
+    }
+    document.addEventListener('change', event => {
+      const reviewed = event.target.checked;
+      if (event.target.id === 'group-reviewed') {
+        setReviewed(groupBlocks(concepts[selected]), reviewed, reviewed ? 'Concept marked reviewed' : 'Concept marked unreviewed');
+        document.getElementById('group-reviewed').focus({ preventScroll: true });
+      } else if (event.target.dataset.block) {
+        const item = allBlocks().find(item => item.id === event.target.dataset.block);
+        if (!item) return;
+        setReviewed([item], reviewed, reviewed ? 'Block marked reviewed' : 'Block marked unreviewed');
+        (document.querySelector('[data-block]') || document.getElementById('group-reviewed')).focus({ preventScroll: true });
+      }
+    });
+    document.addEventListener('click', event => {
+      const button = event.target.closest('button');
+      if (!button || button.disabled) return;
+      if (button.dataset.filter) { filter = button.dataset.filter; render(); document.getElementById('content').scrollTop = 0; }
+      if (button.dataset.group !== undefined || button.dataset.step) { selected = button.dataset.group !== undefined ? Number(button.dataset.group) : selected + Number(button.dataset.step); selectedFile = 0; render(); document.getElementById('content').scrollTop = 0; document.querySelector(`[data-group="${selected}"]`).focus({ preventScroll: true }); }
+      if (button.dataset.file !== undefined) { selectedFile = Number(button.dataset.file); document.querySelectorAll('[data-file]').forEach(link => link.setAttribute('aria-current', String(Number(link.dataset.file) === selectedFile))); document.getElementById(`file-${selectedFile}`)?.scrollIntoView({ block: 'start' }); }
+      if (button.dataset.undo && lastReviewChange.length) {
+        lastReviewChange.forEach(change => { change.item.reviewed = change.reviewed; });
+        lastReviewChange = [];
+        document.getElementById('toast').hidden = true;
+        clearTimeout(toastTimer);
+        render();
+        document.getElementById('group-reviewed').focus({ preventScroll: true });
+      }
+    });
+    document.getElementById('branch').innerHTML = `${icon('branch')} jv/incremental-review`;
+    document.getElementById('heading').innerHTML = `${icon('layers')}<h1>Guided Review</h1>`;
+    document.getElementById('codex').innerHTML = `${icon('sparkle')}Grouped by Codex`;
+    render();
+  </script>
+</body>
+</html>
