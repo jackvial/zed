@@ -1018,10 +1018,7 @@ impl Render for GuidedReview {
                             v_flex()
                                 .min_w_0()
                                 .gap_0p5()
-                                .child(
-                                    Label::new(path.as_unix_str().to_owned())
-                                        .size(LabelSize::Small),
-                                )
+                                .child(Label::new(path.as_unix_str().to_owned()))
                                 .child(
                                     Label::new(format!(
                                         "{} · {} blocks",
@@ -1234,10 +1231,9 @@ impl Render for GuidedReview {
                                     group.filter(|group| !group.description.is_empty()),
                                     |view, group| {
                                         view.child(
-                                            div().pb_4().child(
-                                                Label::new(group.description.clone())
-                                                    .size(LabelSize::Small),
-                                            ),
+                                            div()
+                                                .pb_4()
+                                                .child(Label::new(group.description.clone())),
                                         )
                                     },
                                 )
