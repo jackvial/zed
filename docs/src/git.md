@@ -124,16 +124,25 @@ commit your files.
 Click **Regenerate Guided Review** to capture the latest changes and ask Codex to
 group them again. Unchanged blocks keep their reviewed state. When your files or
 branch change, regenerate before checking off more blocks. **Cancel** stops
-generation and keeps the loaded review available.
+generation and keeps the loaded review available. If files change during
+generation, the finished guide remains available for its captured snapshot;
+regenerate to include the latest changes.
 
 Click **Review prompt** beside the regeneration button to view and edit the
 instructions used to generate the guide. Your edits are saved for the current
 branch. Click **Regenerate Guided Review** to apply them to both the grouping and
 concept descriptions. Zed attaches the current branch changes automatically.
 
-Generation opens a **Codex Guided Review** terminal tab with live model output
-and errors. Return to the Guided Review tab to continue reviewing or cancel the
-run. **Codex output** reopens the latest run's output.
+Generation opens a **Codex Guided Review** terminal tab that streams model output
+as it arrives, including progress summaries and errors. The terminal identifies
+the resolved Codex model and reasoning effort. The model also appears beneath the
+branch name in the guide and is saved with the generated review. Return to the
+Guided Review tab to continue reviewing or cancel the run. **Codex output** reopens
+the latest run's output.
+
+Click **Export Markdown** to save all generated concept titles, descriptions, and
+grouped file paths to a `.md` file. The export includes every concept regardless
+of the review filter, without file contents or diffs.
 
 Guided Review requires a local Git repository with an initial commit and a local
 `dev` branch. Binary and unreadable files are omitted without blocking the rest

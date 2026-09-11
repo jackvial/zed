@@ -24,7 +24,10 @@ use std::{ops::Range, sync::Arc, time::Duration};
 use terminal::{Terminal, TerminalBuilder};
 use terminal_view::TerminalView;
 use ui::{Checkbox, ListItem, Tooltip, prelude::*};
-use util::ResultExt as _;
+use util::{
+    ResultExt as _,
+    markdown::{MarkdownEscaped, MarkdownInlineCode},
+};
 use workspace::{
     Item, Workspace, item::ItemEvent, notifications::NotifyTaskExt as _,
     searchable::SearchableItemHandle,
@@ -48,6 +51,28 @@ struct ConceptGroup {
     files: Vec<String>,
 }
 
+fn review_markdown(branch: &str, groups: &[ConceptGroup]) -> String {
+    let mut markdown = format!(
+        "# Guided Review\n\nBranch: {} against `dev`\n",
+        MarkdownInlineCode(branch.trim_start_matches("refs/heads/")),
+    );
+    for (index, group) in groups.iter().enumerate() {
+        markdown.push_str(&format!(
+            "\n## {}. {}\n\n",
+            index + 1,
+            MarkdownEscaped(&group.title),
+        ));
+        if !group.description.is_empty() {
+            markdown.push_str(&format!("{}\n\n", MarkdownEscaped(&group.description)));
+        }
+        markdown.push_str("**Files**\n\n");
+        for path in &group.files {
+            markdown.push_str(&format!("- {}\n", MarkdownInlineCode(path)));
+        }
+    }
+    markdown
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct SavedReview {
     groups: Vec<ConceptGroup>,
@@ -58,6 +83,8 @@ struct SavedReview {
     prompt: Option<String>,
     #[serde(default)]
     generated_prompt: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -208,6 +235,7 @@ struct GuidedReview {
     focus_handle: FocusHandle,
     loading: bool,
     generating: bool,
+    running_model: Option<String>,
     error: Option<String>,
     show_omitted_files: bool,
     last_review_change: Vec<(String, bool)>,
@@ -395,6 +423,7 @@ impl GuidedReview {
             focus_handle: cx.focus_handle(),
             loading: false,
             generating: false,
+            running_model: None,
             error: None,
             show_omitted_files: false,
             last_review_change: Vec::new(),
@@ -430,12 +459,44 @@ impl GuidedReview {
         )
     }
 
+    fn can_export(&self, cx: &App) -> bool {
+        self.saved.generated
+            && !self.saved.groups.is_empty()
+            && !self.loading
+            && !self.generating
+            && !self.branch_changed(cx)
+    }
+
+    fn export_markdown(&self, cx: &mut Context<Self>) -> Task<Result<()>> {
+        if !self.can_export(cx) {
+            return Task::ready(Err(anyhow!("Generate a guided review before exporting")));
+        }
+        let markdown = review_markdown(&self.branch, &self.saved.groups);
+        let path = cx.prompt_for_new_path(
+            &self.repository.read(cx).work_directory_abs_path,
+            Some("guided-review.md"),
+        );
+        let fs = self.project.read(cx).fs().clone();
+        cx.spawn(async move |_, _| {
+            let Some(path) = path
+                .await
+                .context("Could not open the export save dialog")??
+            else {
+                return Ok(());
+            };
+            fs.atomic_write(path.clone(), markdown)
+                .await
+                .with_context(|| format!("Could not export guided review to {}", path.display()))
+        })
+    }
+
     fn regenerate(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.snapshot.is_some() && !self.branch_changed(cx) {
             self.saved.prompt = Some(self.prompt_editor.read(cx).text(cx));
         }
         self.loading = true;
         self.generating = false;
+        self.running_model = None;
         self.error = None;
         let load =
             BranchReviewSnapshot::load(self.project.clone(), self.repository.clone(), window, cx);
@@ -529,7 +590,7 @@ impl GuidedReview {
                     let terminal = Self::open_output_terminal(&this, cx)?;
                     output_terminal = Some(terminal.clone());
                     let environment = environment.await.unwrap_or_default();
-                    let (sender, mut receiver) = mpsc::unbounded::<String>();
+                    let (sender, mut receiver) = mpsc::unbounded::<codex::Output>();
                     let generate = cx.background_spawn(async move {
                         codex::generate(prompt, paths, environment, move |output| {
                             sender.unbounded_send(output).log_err();
@@ -545,23 +606,56 @@ impl GuidedReview {
                             }
                         }
                     };
-                    let (groups, ()) = futures::join!(generate, async {
+                    let (generated, ()) = futures::join!(generate, async {
                         while let Some(output) = receiver.next().await {
-                            terminal.update(cx, |terminal, cx| terminal.write_output(output.as_bytes(), cx));
+                            match output {
+                                codex::Output::Text(text) => terminal.update(cx, |terminal, cx| terminal.write_output(text.as_bytes(), cx)),
+                                codex::Output::Model(model) => {
+                                    this.update(cx, |this, cx| {
+                                        this.running_model = Some(model);
+                                        cx.notify();
+                                    }).log_err();
+                                }
+                            }
                         }
                     });
-                    let groups = groups?;
+                    let generated = generated?;
+                    let refresh = this.update_in(cx, |this, window, cx| {
+                        (this.stale(cx) && !this.branch_changed(cx)).then(|| {
+                            BranchReviewSnapshot::load(this.project.clone(), this.repository.clone(), window, cx)
+                        })
+                    })?;
+                    let refreshed = if let Some(refresh) = refresh {
+                        match refresh.await {
+                            Ok(snapshot) => Some(snapshot),
+                            Err(error) => {
+                                log::warn!("Could not refresh guided review snapshot: {error:#}");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     this.update_in(cx, |this, window, cx| -> Result<()> {
                         ensure!(
-                            !this.stale(cx),
-                            "Changes were updated while Codex was grouping them. Regenerate the guided review."
+                            !this.branch_changed(cx),
+                            "Branch changed while Codex was grouping changes. Regenerate the guided review."
                         );
-                        this.saved.groups = groups;
+                        if let Some(refreshed) = refreshed {
+                            this.refresh_snapshot(refreshed);
+                        }
+                        this.saved.groups = generated.groups;
+                        this.saved.model = Some(generated.model);
                         this.saved.generated = true;
                         this.saved.generated_prompt = Some(instructions);
                         this.selected_group = 0;
                         this.show_group(window, cx);
                         this.persist(cx);
+                        if this.stale(cx) {
+                            terminal.update(cx, |terminal, cx| terminal.write_output(
+                                b"\nThe branch changed during generation. The guide is available for the captured snapshot; regenerate to include the latest changes.\n", cx
+                            ));
+                        }
                         Ok(())
                     })??;
                 }
@@ -586,6 +680,24 @@ impl GuidedReview {
             .log_err();
         });
         cx.notify();
+    }
+
+    fn refresh_snapshot(&mut self, snapshot: BranchReviewSnapshot) {
+        if self.snapshot.as_ref().is_some_and(|previous| {
+            previous.branch == snapshot.branch
+                && previous.files.len() == snapshot.files.len()
+                && previous
+                    .files
+                    .iter()
+                    .zip(&snapshot.files)
+                    .all(|(before, after)| {
+                        before.path == after.path
+                            && before.base_text == after.base_text
+                            && before.current_text == after.current_text
+                    })
+        }) {
+            self.snapshot = Some(snapshot);
+        }
     }
 
     fn open_output_terminal(
@@ -774,7 +886,7 @@ impl GuidedReview {
                     })?
                     .await?;
                 if let Some(editor) = item.downcast::<Editor>() {
-                    editor.update_in(cx, |editor, window, cx| {
+                    editor.update_in(cx, |editor, window, cx| -> Result<()> {
                         editor.start_temporary_diff_override();
                         editor
                             .buffer()
@@ -784,13 +896,25 @@ impl GuidedReview {
                             Arc::new(|_, _, _, _, _, _, _, _| gpui::Empty.into_any_element()),
                             cx,
                         );
+                        let buffer = editor.buffer().read(cx);
+                        let source = buffer
+                            .as_singleton()
+                            .context("Expected a single file editor")?;
+                        let source = source.read(cx);
+                        let position = source.clip_point(position, language::Bias::Left);
+                        let anchor = source.anchor_before(position);
+                        let position = buffer
+                            .snapshot(cx)
+                            .anchor_in_excerpt(anchor)
+                            .context("Could not locate the file position in its diff")?;
                         editor.change_selections(
                             SelectionEffects::scroll(Autoscroll::center()),
                             window,
                             cx,
                             |selections| selections.select_ranges([position..position]),
                         );
-                    })?;
+                        Ok(())
+                    })??;
                 }
                 Ok(())
             }
@@ -1100,9 +1224,32 @@ impl Render for GuidedReview {
                 .border_b_1()
                 .border_color(cx.theme().colors().border)
                 .child(
-                    Label::new(format!("{branch} against dev"))
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
+                    v_flex()
+                        .child(
+                            Label::new(format!("{branch} against dev"))
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .when(!branch_changed, |view| {
+                            view.child(
+                                Label::new(if self.generating {
+                                    self.running_model
+                                        .as_ref()
+                                        .map(|model| format!("Model: {model}"))
+                                        .unwrap_or_else(|| "Model: starting Codex…".into())
+                                } else {
+                                    self.saved
+                                        .model
+                                        .as_ref()
+                                        .map(|model| format!("Model: {model}"))
+                                        .unwrap_or_else(|| {
+                                            "Model not recorded · regenerate to show model".into()
+                                        })
+                                })
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                            )
+                        }),
                 )
                 .child(
                     h_flex()
@@ -1297,6 +1444,20 @@ impl Render for GuidedReview {
                 h_flex()
                     .gap_2()
                     .child(
+                        Button::new("guided-export-markdown", "Export Markdown")
+                            .disabled(!self.can_export(cx))
+                            .tooltip(Tooltip::text(
+                                "Export all concept titles, descriptions, and file paths",
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.export_markdown(cx).detach_and_notify_err(
+                                    this.workspace.clone(),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
                         Button::new(
                             "guided-review-prompt",
                             if prompt_changed {
@@ -1481,7 +1642,7 @@ impl Render for GuidedReview {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fs::FakeFs;
+    use fs::{FakeFs, Fs as _};
     use gpui::TestAppContext;
     use serde_json::json;
     use settings::SettingsStore;
@@ -1570,6 +1731,7 @@ mod tests {
             generated: true,
             prompt: Some("Explain the model changes and their tests.".into()),
             generated_prompt: Some("Explain the model changes and their tests.".into()),
+            model: Some("test-model".into()),
             ..Default::default()
         };
         let database = cx.read(KeyValueStore::global);
@@ -1641,7 +1803,41 @@ mod tests {
             }
         });
         let ids = review.read_with(cx, |review, _| review.group_blocks(0));
+        let export = review.update(cx, |review, cx| {
+            review.filter = ReviewFilter::Reviewed;
+            review.export_markdown(cx)
+        });
+        cx.simulate_new_path_selection(|directory| {
+            assert_eq!(directory, Path::new(path!("/guided-controls")));
+            Some(path!("/exported-review.md").into())
+        });
+        export.await.expect("export review");
+        let exported = fs
+            .load(Path::new(path!("/exported-review.md")))
+            .await
+            .expect("read exported review");
+        assert_eq!(
+            exported,
+            "# Guided Review\n\nBranch: `feature` against `dev`\n\n\
+             ## 1. Update model\n\nChanges two model behaviors.\n\n\
+             **Files**\n\n- `model.txt`\n\n\
+             ## 2. Test model\n\nAdds coverage for the model.\n\n\
+             **Files**\n\n- `test.txt`\n"
+        );
+        let export = review.update(cx, |review, cx| review.export_markdown(cx));
+        cx.simulate_new_path_selection(|_| None);
+        export.await.expect("cancel export");
+        let export = review.update(cx, |review, cx| review.export_markdown(cx));
+        cx.simulate_new_path_selection(|_| Some(path!("/guided-controls").into()));
+        assert!(
+            export
+                .await
+                .expect_err("cannot overwrite a directory")
+                .to_string()
+                .contains("Could not export guided review")
+        );
         review.update_in(cx, |review, window, cx| {
+            review.filter = ReviewFilter::All;
             review.set_reviewed(vec![ids[0].clone()], true, window, cx);
             assert_eq!(review.checked(&ids), ToggleState::Indeterminate);
             review.set_reviewed(ids.clone(), true, window, cx);
@@ -1728,7 +1924,51 @@ mod tests {
             })
             .await
             .expect("source buffer");
+        fs.set_head_for_repo(
+            git_path,
+            &[
+                ("model.txt", current.into()),
+                ("test.txt", "new test\n".into()),
+            ],
+            "feature-head",
+        );
+        cx.run_until_parked();
+        review.read_with(cx, |review, cx| assert!(review.stale(cx)));
+        let refreshed = cx
+            .update(|window, cx| {
+                BranchReviewSnapshot::load(project.clone(), repository.clone(), window, cx)
+            })
+            .await
+            .expect("snapshot after repository rescan");
+        review.update(cx, |review, cx| {
+            review.refresh_snapshot(refreshed);
+            assert!(!review.stale(cx));
+            assert_eq!(review.saved.model.as_deref(), Some("test-model"));
+        });
         source.update(cx, |source, cx| source.set_text("new edit\n", cx));
+        let changed = cx
+            .update(|window, cx| {
+                BranchReviewSnapshot::load(project.clone(), repository.clone(), window, cx)
+            })
+            .await
+            .expect("snapshot after source edit");
+        review.update(cx, |review, cx| {
+            review.refresh_snapshot(changed);
+            assert!(review.stale(cx));
+            assert_eq!(
+                review
+                    .snapshot
+                    .as_ref()
+                    .expect("captured snapshot")
+                    .files
+                    .iter()
+                    .find(|file| file.path.as_unix_str() == "model.txt")
+                    .expect("captured file")
+                    .current_text
+                    .as_deref(),
+                Some(current)
+            );
+        });
         review.read_with(cx, |review, cx| {
             assert!(review.stale(cx));
             assert_eq!(
@@ -1799,7 +2039,24 @@ mod tests {
             review.show_group(window, cx);
             review.editor.clone()
         });
+        let target = review.read_with(cx, |review, cx| {
+            let file = review
+                .files
+                .iter()
+                .find(|file| file.path.as_unix_str() == "model.txt")
+                .expect("model file");
+            let anchor = file.buffer.read(cx).anchor_before(Point::new(10, 3));
+            review
+                .multibuffer
+                .read(cx)
+                .snapshot(cx)
+                .anchor_in_excerpt(anchor)
+                .expect("target in second hunk")
+        });
         diff_editor.update_in(cx, |editor, window, cx| {
+            editor.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
+                selections.select_ranges([target..target])
+            });
             editor.open_excerpts(&editor::actions::OpenExcerpts, window, cx);
         });
         cx.run_until_parked();
@@ -1823,6 +2080,17 @@ mod tests {
                 .expect("dev diff");
             assert_eq!(diff.read(cx).base_text_string(cx).as_deref(), Some(base));
             assert_eq!(workspace.items_of_type::<GuidedReview>(cx).count(), 1);
+            let opened = opened.read(cx);
+            let (anchor, _) = opened
+                .buffer()
+                .read(cx)
+                .snapshot(cx)
+                .anchor_to_buffer_anchor(opened.selections.newest_anchor().head())
+                .expect("source cursor");
+            assert_eq!(
+                language::ToPoint::to_point(&anchor, &source.read(cx).snapshot()),
+                Point::new(1, 0)
+            );
             diff
         });
         source.update(cx, |buffer, cx| buffer.set_text(base, cx));
@@ -1834,6 +2102,31 @@ mod tests {
                     .hunks(&source.read(cx).snapshot())
                     .next()
                     .is_none()
+            );
+        });
+        source.update(cx, |source, cx| source.set_text(current, cx));
+        cx.run_until_parked();
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.activate_item(&review, true, true, window, cx);
+        });
+        diff_editor.update_in(cx, |editor, window, cx| {
+            editor.open_excerpts(&editor::actions::OpenExcerpts, window, cx);
+        });
+        cx.run_until_parked();
+        workspace.read_with(cx, |workspace, cx| {
+            let opened = workspace
+                .active_item_as::<Editor>(cx)
+                .expect("reopened file");
+            let opened = opened.read(cx);
+            let (anchor, _) = opened
+                .buffer()
+                .read(cx)
+                .snapshot(cx)
+                .anchor_to_buffer_anchor(opened.selections.newest_anchor().head())
+                .expect("source cursor after deleted lines");
+            assert_eq!(
+                language::ToPoint::to_point(&anchor, &source.read(cx).snapshot()),
+                Point::new(10, 3)
             );
         });
         let right_pane = workspace.read_with(cx, |workspace, _| workspace.active_pane().clone());
@@ -1859,6 +2152,22 @@ mod tests {
     }
 
     #[test]
+    fn markdown_export_preserves_literal_titles_descriptions_and_paths() {
+        let exported = review_markdown(
+            "refs/heads/feature/export",
+            &[ConceptGroup {
+                title: "Support *literal* names".into(),
+                description: "Keep <names> and [paths].\n\nAlso `code`.".into(),
+                files: vec!["src/a`b.rs".into(), "docs/my guide.md".into()],
+            }],
+        );
+        assert!(exported.contains("Branch: `feature/export` against `dev`"));
+        assert!(exported.contains(r"## 1. Support \*literal\* names"));
+        assert!(exported.contains("Keep &lt;names&gt; and \\[paths].\n\nAlso \\`code\\`."));
+        assert!(exported.contains("- ``src/a`b.rs``\n- `docs/my guide.md`\n"));
+    }
+
+    #[test]
     fn restores_reviews_created_before_descriptions_and_editable_prompts() {
         let saved: SavedReview = serde_json::from_value(json!({
             "groups": [{"title": "Model", "files": ["model.rs"]}],
@@ -1868,6 +2177,7 @@ mod tests {
         assert!(saved.groups[0].description.is_empty());
         assert!(saved.prompt.is_none());
         assert!(saved.generated_prompt.is_none());
+        assert!(saved.model.is_none());
         assert!(saved.reviewed.contains("accepted-block"));
     }
 
